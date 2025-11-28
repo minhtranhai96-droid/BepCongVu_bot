@@ -1,6 +1,8 @@
-python-telegram-bot==13.11
-Flask==2.2.5
-pandas==2.0.3
-fpdf==1.7.2
+python-telegram-bot==13.15
+Flask==2.3.2
+pandas==1.5.3
+fpdf2==2.7.5
 gunicorn==20.1.0
-Pillow==10.0.1
+openpyxl
+
+
