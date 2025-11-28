@@ -6,6 +6,10 @@ import telegram
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from fpdf import FPDF
 
+@app.route("/ping")
+def ping():
+    return "pong", 200
+
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telegram.Bot(token=TOKEN)
 
@@ -163,4 +167,5 @@ def webhook():
             return "OK"
 
     return "OK"
+
 
