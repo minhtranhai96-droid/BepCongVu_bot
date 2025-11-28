@@ -6,14 +6,18 @@ import telegram
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from fpdf import FPDF
 
-@app.route("/ping")
-def ping():
-    return "pong", 200
 
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telegram.Bot(token=TOKEN)
 
 app = Flask(__name__)
+
+from keep_alive import keep_alive
+keep_alive()
+
+@app.route("/ping")
+def ping():
+    return "pong", 200
 
 DATA_FILE = "data.json"
 
@@ -167,5 +171,6 @@ def webhook():
             return "OK"
 
     return "OK"
+
 
 
