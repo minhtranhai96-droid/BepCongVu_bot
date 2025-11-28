@@ -4,7 +4,6 @@ import datetime
 from flask import Flask, request
 import telegram
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-import pandas as pd
 from fpdf import FPDF
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -26,10 +25,20 @@ def save_data(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
+    from openpyxl import Workbook
+
 def generate_excel(data):
-    df = pd.DataFrame(data["lich_su"])
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "BaoCao"
+
+    ws.append(["Thời gian", "Loại", "Số tiền", "Mô tả", "Người nhập"])
+
+    for item in data["lich_su"]:
+        ws.append([item["time"], item["type"], item["amount"], item["desc"], item["user"]])
+
     filename = f"Bao_cao_{datetime.datetime.now().strftime('%Y%m')}.xlsx"
-    df.to_excel(filename, index=False)
+    wb.save(filename)
     return filename
 
 
@@ -154,3 +163,4 @@ def webhook():
             return "OK"
 
     return "OK"
+
