@@ -19,12 +19,6 @@ def format_money(amount):
         return f"{amount/1000:.0f}k"
     return str(amount)
 
-from keep_alive import keep_alive
-keep_alive()
-
-@app.route("/ping")
-def ping():
-    return "pong", 200
 
 DATA_FILE = "data.json"
 
@@ -178,6 +172,7 @@ def webhook():
             return "OK"
 
     return "OK"
+
 
 
 
