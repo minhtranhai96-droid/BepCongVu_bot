@@ -11,6 +11,13 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = telegram.Bot(token=TOKEN)
 
 app = Flask(__name__)
+def format_money(amount):
+    amount = int(amount)
+    if amount >= 1_000_000:
+        return f"{amount/1_000_000:.1f}M".rstrip("0").rstrip(".")
+    elif amount >= 1_000:
+        return f"{amount/1000:.0f}k"
+    return str(amount)
 
 from keep_alive import keep_alive
 keep_alive()
@@ -101,7 +108,7 @@ def webhook():
 
         elif data == "history":
             data_file = load_data()
-            msg = "\n".join([f"{i['time']} - {i['amount']} - {i['desc']} ({i['user']})" for i in data_file["lich_su"][-5:]])
+            msg = "\n".join([f"{i['time']} - {format_money(i['amount'])} - {i['desc']} ({i['user']})" for i in data_file["lich_su"][-5:]])
             bot.send_message(chat_id, msg if msg else "Chưa có dữ liệu.")
             return "OK"
 
@@ -112,9 +119,9 @@ def webhook():
 
             bot.send_message(chat_id,
                              f"📊 Báo cáo tháng:\n\n"
-                             f"💰 Nạp quỹ: {total_add}\n"
-                             f"🛒 Chi tiêu: {total_spend}\n"
-                             f"💵 Còn lại: {data_file['quy']}")
+                             f"💰 Nạp quỹ: {format_money(total_add)}\n"
+                             f"🛒 Chi tiêu: {format_money(total_spend)}\n"
+                             f"💵 Còn lại: {format_money(data_file['quy'])}")
             return "OK"
 
         elif data == "export":
@@ -148,7 +155,7 @@ def webhook():
                 "user": user
             })
             save_data(data)
-            bot.send_message(chat_id, f"✔ Thêm {amount} thành công.\n💰 Quỹ còn: {data['quy']}")
+            bot.send_message(chat_id, f"✔ Thêm {format_money(amount)} thành công.\n💰 Quỹ còn: {format_money(data['quy'])}")
             return "OK"
 
         # Handle spending
@@ -167,10 +174,11 @@ def webhook():
                 "user": user
             })
             save_data(data)
-            bot.send_message(chat_id, f"🧾 Chi {amount} ({desc}) — bởi {user}\n💰 Còn: {data['quy']}")
+            bot.send_message(chat_id, f"🧾 Chi {format_money(amount)} ({desc}) — bởi {user}\n💰 Còn: {format_money(data['quy'])}")
             return "OK"
 
     return "OK"
+
 
 
 
