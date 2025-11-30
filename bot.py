@@ -159,29 +159,33 @@ def webhook():
             return "OK"
 
         # Add money if user types number only
-        if txt.replace(".", "").replace(",", "").replace("k","").replace("m","").replace("tr","").replace("ty","").replace("tỷ","").isdigit():
+        # Add money (supports 50k, 1m, 200000...)
+if txt.replace(".", "").replace(",", "").replace("k", "").replace("m", "").replace("tr", "").replace("ty", "").replace("tỷ", "").isdigit():
     amount = parse_money(txt)
-            data = load_data()
-            data["quy"] += amount
-            data["lich_su"].append({
-                "time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
-                "type": "add",
-                "amount": amount,
-                "desc": "Nạp quỹ",
-                "user": user
-            })
-            save_data(data)
-            bot.send_message(chat_id, f"✔ Thêm {format_money(amount)} thành công.\n💰 Quỹ còn: {format_money(data['quy'])}")
-            return "OK"
+    data = load_data()
+    data["quy"] += amount
+    data["lich_su"].append({
+        "time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "type": "add",
+        "amount": amount,
+        "desc": "Nạp quỹ",
+        "user": user
+    })
+    save_data(data)
+    bot.send_message(chat_id, f"✔ Thêm {format_money(amount)} thành công.\n💰 Quỹ còn: {format_money(data['quy'])}")
+    return "OK"
+
 
         # Handle spending
         parts = txt.split(" ", 1)
-        if len(parts) == 2:
+if len(parts) == 2:
     try:
         amount = parse_money(parts[0])
         desc = parts[1]
     except:
+        bot.send_message(chat_id, "⚠ Sai định dạng số tiền! Ví dụ: 50k, 120k, 1m")
         return "OK"
+
 
 
             data = load_data()
@@ -198,6 +202,7 @@ def webhook():
             return "OK"
 
     return "OK"
+
 
 
 
