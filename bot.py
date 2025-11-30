@@ -19,6 +19,28 @@ def format_money(amount):
         return f"{amount/1000:.0f}k"
     return str(amount)
 
+def parse_money(text):
+    text = text.lower().replace(" ", "").replace(",", ".")
+    
+    # dạng 50k, 120k, 0.5k
+    if text.endswith("k"):
+        return int(float(text[:-1]) * 1000)
+
+    # dạng 1m, 1.5m
+    if text.endswith("m"):
+        return int(float(text[:-1]) * 1_000_000)
+
+    # dạng 1tr, 1.2tr
+    if text.endswith("tr") or text.endswith("triệu"):
+        return int(float(text.replace("tr","").replace("triệu","")) * 1_000_000)
+
+    # dạng 1ty hoặc 1tỷ
+    if text.endswith("ty") or text.endswith("tỷ"):
+        return int(float(text[:-2]) * 1_000_000_000)
+
+    # nếu người dùng nhập số bình thường
+    return int(float(text))
+
 
 DATA_FILE = "data.json"
 
@@ -137,8 +159,8 @@ def webhook():
             return "OK"
 
         # Add money if user types number only
-        if txt.isdigit():
-            amount = int(txt)
+        if txt.replace(".", "").replace(",", "").replace("k","").replace("m","").replace("tr","").replace("ty","").replace("tỷ","").isdigit():
+    amount = parse_money(txt)
             data = load_data()
             data["quy"] += amount
             data["lich_su"].append({
@@ -154,9 +176,13 @@ def webhook():
 
         # Handle spending
         parts = txt.split(" ", 1)
-        if len(parts) == 2 and parts[0].isdigit():
-            amount = int(parts[0])
-            desc = parts[1]
+        if len(parts) == 2:
+    try:
+        amount = parse_money(parts[0])
+        desc = parts[1]
+    except:
+        return "OK"
+
 
             data = load_data()
             data["quy"] -= amount
@@ -172,6 +198,7 @@ def webhook():
             return "OK"
 
     return "OK"
+
 
 
 
