@@ -159,7 +159,7 @@ def webhook():
             return "OK"
 
         # Add money if user types number only
-        # Add money (supports 50k, 1m, 200000...)
+        # Add money (supports: 50k, 120k, 1m...)
 if txt.replace(".", "").replace(",", "").replace("k", "").replace("m", "").replace("tr", "").replace("ty", "").replace("tỷ", "").isdigit():
     amount = parse_money(txt)
     data = load_data()
@@ -176,8 +176,8 @@ if txt.replace(".", "").replace(",", "").replace("k", "").replace("m", "").repla
     return "OK"
 
 
-        # Handle spending
-        parts = txt.split(" ", 1)
+# Handle spending
+parts = txt.split(" ", 1)
 if len(parts) == 2:
     try:
         amount = parse_money(parts[0])
@@ -185,6 +185,19 @@ if len(parts) == 2:
     except:
         bot.send_message(chat_id, "⚠ Sai định dạng số tiền! Ví dụ: 50k, 120k, 1m")
         return "OK"
+
+    data = load_data()
+    data["quy"] -= amount
+    data["lich_su"].append({
+        "time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "type": "spend",
+        "amount": amount,
+        "desc": desc,
+        "user": user
+    })
+    save_data(data)
+    bot.send_message(chat_id, f"🧾 Chi {format_money(amount)} ({desc}) — bởi {user}\n💰 Còn: {format_money(data['quy'])}")
+    return "OK"
 
 
 
@@ -202,6 +215,7 @@ if len(parts) == 2:
             return "OK"
 
     return "OK"
+
 
 
 
