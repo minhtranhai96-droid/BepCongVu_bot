@@ -57,7 +57,7 @@ def parse_amount(text):
         return int(text[:-1]) * 1000
     if text.endswith("m"):
         return int(text[:-1]) * 1_000_000
-    return int(text)
+    return None  # INVALID if no k/m suffix
 
 
 # =================== MENU ===================
@@ -82,7 +82,7 @@ def home():
 def webhook():
     update = telegram.Update.de_json(request.get_json(), bot)
 
-    # ====== CALLBACK ======
+    # ====== CALLBACK BUTTON ======
     if update.callback_query:
         chat_id = update.callback_query.message.chat_id
         action = update.callback_query.data
@@ -91,11 +91,10 @@ def webhook():
         data = load_data()
         state = load_state()
 
-        # save mode
         state[str(chat_id)] = action
         save_state(state)
 
-        # ==== Undo Button ====
+        # ---- Undo Logic ----
         if action == "undo":
             if not data["lich_su"]:
                 bot.send_message(chat_id, "⚠️ Không có giao dịch nào để hoàn tác.")
@@ -116,22 +115,15 @@ def webhook():
 
             save_data(data)
 
-            bot.send_message(
-                chat_id,
-                f"🗑 HOÀN TÁC:\n"
-                f"{format_money(removed['amount'])} — {removed['desc']}\n\n"
-                f"💵 Quỹ mới: {format_money(data['quy'])}"
-            )
+            bot.send_message(chat_id, f"🗑 HOÀN TÁC: {format_money(removed['amount'])} — {removed['desc']}\n💵 Quỹ mới: {format_money(data['quy'])}")
             send_menu(chat_id)
             return "OK"
 
-
+        # Normal menu actions
         if action == "add":
-            bot.send_message(chat_id, "👉 Nhập số tiền nạp (vd: 500k hoặc 500k A nộp):")
-
+            bot.send_message(chat_id, "👉 Nhập tiền nạp (vd: 100k hoặc 300k A nộp):")
         elif action == "spend":
-            bot.send_message(chat_id, "👉 Nhập số tiền + mô tả (vd: 50k rau, 200k thịt):")
-
+            bot.send_message(chat_id, "👉 Nhập chi tiêu (vd: 50k rau, 200k thịt):")
         elif action == "report":
             now = datetime.datetime.now(TZ)
             month = now.strftime("%m")
@@ -145,23 +137,21 @@ def webhook():
             total_add = sum(i["amount"] for i in records if i["type"] == "add")
             total_spend = sum(i["amount"] for i in records if i["type"] == "spend")
 
-            report = f"📊 *BÁO CÁO THÁNG {month}/{year}*\n\n"
-
-            report += f"💰 *Tổng nạp:* {format_money(total_add)}\n"
+            msg = f"📊 *BÁO CÁO THÁNG {month}/{year}*\n\n💰 Tổng nạp: {format_money(total_add)}\n"
             for i in records:
                 if i["type"] == "add":
-                    timestamp = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
-                    report += f"   ➕ {format_money(i['amount'])} — {i['desc']} • {timestamp}\n"
+                    t = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
+                    msg += f"   ➕ {format_money(i['amount'])} — {i['desc']} • {t}\n"
 
-            report += f"\n🛍 *Tổng chi:* {format_money(total_spend)}\n"
+            msg += f"\n🛍 Tổng chi: {format_money(total_spend)}\n"
             for i in records:
                 if i["type"] == "spend":
-                    timestamp = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
-                    report += f"   ➖ {format_money(i['amount'])} — {i['desc']} • {timestamp}\n"
+                    t = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
+                    msg += f"   ➖ {format_money(i['amount'])} — {i['desc']} • {t}\n"
 
-            report += f"\n💵 *Quỹ hiện tại:* {format_money(data['quy'])}"
+            msg += f"\n💵 *Quỹ hiện tại:* {format_money(data['quy'])}"
 
-            bot.send_message(chat_id, report, parse_mode="Markdown")
+            bot.send_message(chat_id, msg, parse_mode="Markdown")
 
         return "OK"
 
@@ -185,13 +175,16 @@ def webhook():
             send_menu(chat_id)
             return "OK"
 
-
         # ========= ADD MONEY =========
         if mode == "add":
-            parts = text.split(" ", 1)
+            token = text.split(" ", 1)[0].lower()
+            amount = parse_amount(token)
 
-            amount = parse_amount(parts[0])
-            desc = parts[1] if len(parts) > 1 else "Nạp quỹ"
+            if amount is None:
+                bot.send_message(chat_id, "❌ Sai định dạng!\n💡 Ví dụ đúng:\n• 50k\n• 300k A nộp\n\n👉 Nhập lại:")
+                return "OK"
+
+            desc = text[len(token):].strip() or "Nạp quỹ"
             desc = f"{desc} — ({user})"
 
             data["quy"] += amount
@@ -216,29 +209,37 @@ def webhook():
         if mode == "spend":
             items = text.split(",")
             total = 0
-            labels = []
+            records = []
 
             for item in items:
                 part = item.strip().split(" ", 1)
-                amount = parse_amount(part[0])
+                token = part[0].lower()
+                amount = parse_amount(token)
+
+                if amount is None:
+                    bot.send_message(chat_id, "❌ Sai định dạng!\n💡 Ví dụ đúng:\n• 50k rau\n• 50k rau, 200k thịt\n\n👉 Nhập lại toàn bộ:")
+                    return "OK"
+
                 desc = part[1] if len(part) > 1 else "Chi tiêu"
                 desc = f"{desc} — ({user})"
 
                 total += amount
-                labels.append(desc)
+                records.append({"amount": amount, "desc": desc})
 
+            # apply
+            for r in records:
                 data["lich_su"].append({
                     "time": now_time(),
                     "type": "spend",
-                    "amount": amount,
-                    "desc": desc,
+                    "amount": r["amount"],
+                    "desc": r["desc"],
                     "user": user
                 })
 
             data["quy"] -= total
             save_data(data)
 
-            # ===== RESET WHEN BALANCE = 0 =====
+            # === RESET WHEN FUNDS = 0 ===
             if data["quy"] == 0:
                 now = datetime.datetime.now(TZ)
                 month = now.strftime("%m/%Y")
@@ -259,18 +260,15 @@ def webhook():
                 bot.send_message(chat_id, msg, parse_mode="Markdown")
 
                 timestamp = now.strftime("%Y-%m-%d_%H-%M")
-                backup_file = f"backup_{timestamp}.json"
-                with open(backup_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=4, ensure_ascii=False)
+                backup = f"backup_{timestamp}.json"
+                json.dump(data, open(backup, "w", encoding="utf-8"), indent=4, ensure_ascii=False)
 
                 data["lich_su"] = []
                 save_data(data)
-
                 send_menu(chat_id)
                 return "OK"
 
-
-            bot.send_message(chat_id, f"🧾 CHI {format_money(total)} — {', '.join(labels)}\n👉 Quỹ còn: {format_money(data['quy'])}")
+            bot.send_message(chat_id, f"🧾 CHI {format_money(total)} — cập nhật!\n👉 Quỹ còn: {format_money(data['quy'])}")
 
             state[str(chat_id)] = None
             save_state(state)
