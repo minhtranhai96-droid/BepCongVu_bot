@@ -1,10 +1,12 @@
 import os
 import json
-import datetime
+from datetime import datetime
+import pytz
 from flask import Flask, request
 import telegram
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from fpdf import FPDF
+from openpyxl import Workbook
 
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telegram.Bot(token=TOKEN)
@@ -12,6 +14,7 @@ bot = telegram.Bot(token=TOKEN)
 app = Flask(__name__)
 
 DATA_FILE = "data.json"
+VN_TIME = pytz.timezone("Asia/Ho_Chi_Minh")   # >>> GMT+7
 
 
 # ===================== FORMAT + PARSE MONEY =====================
@@ -23,7 +26,6 @@ def format_money(amount):
     elif amount >= 1_000:
         return f"{amount/1000:.0f}k"
     return str(amount)
-
 
 def parse_money(text):
     text = text.lower().replace(" ", "").replace(",", ".")
@@ -43,7 +45,6 @@ def parse_money(text):
     return int(float(text))
 
 
-
 # ===================== DATA STORAGE =====================
 
 def load_data():
@@ -52,16 +53,12 @@ def load_data():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-
 # ===================== EXPORT FUNCTIONS =====================
-
-from openpyxl import Workbook
 
 def generate_excel(data):
     wb = Workbook()
@@ -73,10 +70,9 @@ def generate_excel(data):
     for item in data["lich_su"]:
         ws.append([item["time"], item["type"], item["amount"], item["desc"], item["user"]])
 
-    filename = f"Bao_cao_{datetime.datetime.now().strftime('%Y%m')}.xlsx"
+    filename = f"Bao_cao_{datetime.now(VN_TIME).strftime('%Y%m')}.xlsx"
     wb.save(filename)
     return filename
-
 
 def generate_pdf(data):
     pdf = FPDF()
@@ -89,10 +85,9 @@ def generate_pdf(data):
         line = f"{item['time']} | {item['type']} | {format_money(item['amount'])} | {item['desc']} | {item['user']}"
         pdf.cell(0, 10, txt=line, ln=True)
 
-    filename = f"Bao_cao_{datetime.datetime.now().strftime('%Y%m')}.pdf"
+    filename = f"Bao_cao_{datetime.now(VN_TIME).strftime('%Y%m')}.pdf"
     pdf.output(filename)
     return filename
-
 
 
 # ===================== BOT MENU =====================
@@ -108,13 +103,11 @@ def send_menu(chat_id):
     bot.send_message(chat_id, "Chọn chức năng:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
-
 # ===================== FLASK API =====================
 
 @app.route("/", methods=["GET"])
 def home():
     return "BepCongVu Bot is running!"
-
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -162,7 +155,6 @@ def webhook():
             return "OK"
 
 
-
     # ---- MESSAGE HANDLING ----
     if update.message:
         chat_id = update.message.chat_id
@@ -173,13 +165,14 @@ def webhook():
             send_menu(chat_id)
             return "OK"
 
+
         # ---- ADD MONEY ----
         if txt.replace(".", "").replace(",", "").replace("k", "").replace("m", "").replace("tr", "").replace("ty", "").replace("tỷ", "").isdigit():
             amount = parse_money(txt)
             data = load_data()
             data["quy"] += amount
             data["lich_su"].append({
-                "time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "time": datetime.now(VN_TIME).strftime("%d/%m/%Y %H:%M"),
                 "type": "add",
                 "amount": amount,
                 "desc": "Nạp quỹ",
@@ -188,6 +181,7 @@ def webhook():
             save_data(data)
             bot.send_message(chat_id, f"✔ Thêm {format_money(amount)} thành công.\n💰 Quỹ còn: {format_money(data['quy'])}")
             return "OK"
+
 
         # ---- SPEND MONEY ----
         parts = txt.split(" ", 1)
@@ -202,7 +196,7 @@ def webhook():
             data = load_data()
             data["quy"] -= amount
             data["lich_su"].append({
-                "time": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "time": datetime.now(VN_TIME).strftime("%d/%m/%Y %H:%M"),
                 "type": "spend",
                 "amount": amount,
                 "desc": desc,
