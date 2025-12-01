@@ -20,9 +20,10 @@ app = Flask(__name__)
 
 DATA_FILE = "data.json"
 STATE_FILE = "state.json"
+MSG_FILE = "messages.json"
 
 
-# =================== DATA HANDLING ===================
+# =================== FILE HANDLERS ===================
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -39,6 +40,14 @@ def load_state():
 
 def save_state(state):
     json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), indent=4)
+
+def load_messages():
+    if not os.path.exists(MSG_FILE):
+        return []
+    return json.load(open(MSG_FILE, "r", encoding="utf-8"))
+
+def save_messages(msgs):
+    json.dump(msgs, open(MSG_FILE, "w", encoding="utf-8"), indent=4)
 
 
 # =================== MONEY FORMAT ===================
@@ -57,7 +66,17 @@ def parse_amount(text):
         return int(text[:-1]) * 1000
     if text.endswith("m"):
         return int(text[:-1]) * 1_000_000
-    return None  # INVALID if no k/m suffix
+    return None
+
+
+# =================== SEND + LOG MESSAGE ===================
+
+def send_and_log(chat_id, text, **kwargs):
+    msg = bot.send_message(chat_id, text, **kwargs)
+    msgs = load_messages()
+    msgs.append({"chat_id": chat_id, "msg_id": msg.message_id})
+    save_messages(msgs)
+    return msg
 
 
 # =================== MENU ===================
@@ -67,9 +86,10 @@ def send_menu(chat_id):
         [InlineKeyboardButton("➕ Thêm quỹ", callback_data="add")],
         [InlineKeyboardButton("➖ Chi tiêu", callback_data="spend")],
         [InlineKeyboardButton("📊 Báo cáo", callback_data="report")],
-        [InlineKeyboardButton("🔙 Hoàn tác giao dịch cuối", callback_data="undo")]
+        [InlineKeyboardButton("🔙 Hoàn tác giao dịch cuối", callback_data="undo")],
+        [InlineKeyboardButton("🧹 Xóa tin bot", callback_data="clear")]
     ]
-    bot.send_message(chat_id, "📌 Chọn chức năng:", reply_markup=InlineKeyboardMarkup(buttons))
+    send_and_log(chat_id, "📌 Chọn chức năng:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =================== WEBHOOK ===================
@@ -82,28 +102,28 @@ def home():
 def webhook():
     update = telegram.Update.de_json(request.get_json(), bot)
 
-    # ====== CALLBACK BUTTON ======
+    # ================= CALLBACK BUTTON ACTIONS =================
     if update.callback_query:
         chat_id = update.callback_query.message.chat_id
-        action = update.callback_query.data
         user = update.callback_query.from_user.first_name
+        action = update.callback_query.data
 
         data = load_data()
         state = load_state()
+        messages = load_messages()
 
         state[str(chat_id)] = action
         save_state(state)
 
-        # ---- Undo Logic ----
+        # ---- UNDO ----
         if action == "undo":
             if not data["lich_su"]:
-                bot.send_message(chat_id, "⚠️ Không có giao dịch nào để hoàn tác.")
+                send_and_log(chat_id, "⚠️ Không có giao dịch nào để hoàn tác.")
                 return "OK"
 
             last = data["lich_su"][-1]
-
             if last["user"] != user:
-                bot.send_message(chat_id, "⛔ Bạn không thể hoàn tác giao dịch của người khác.")
+                send_and_log(chat_id, "⛔ Bạn không thể hoàn tác giao dịch của người khác.")
                 return "OK"
 
             removed = data["lich_su"].pop()
@@ -115,160 +135,153 @@ def webhook():
 
             save_data(data)
 
-            bot.send_message(chat_id, f"🗑 HOÀN TÁC: {format_money(removed['amount'])} — {removed['desc']}\n💵 Quỹ mới: {format_money(data['quy'])}")
+            send_and_log(chat_id, f"🗑 HOÀN TÁC: {format_money(removed['amount'])} — {removed['desc']}\n💵 Quỹ mới: {format_money(data['quy'])}")
             send_menu(chat_id)
             return "OK"
 
-        # Normal menu actions
+        # ---- CLEAR MESSAGES (ADMIN ONLY) ----
+        if action == "clear":
+            try:
+                member = bot.get_chat_member(chat_id, update.callback_query.from_user.id)
+            except:
+                send_and_log(chat_id, "⚠️ Không xác định được quyền.")
+                return "OK"
+
+            if member.status not in ["administrator", "creator"]:
+                send_and_log(chat_id, "⛔ Chỉ quản trị viên mới được dùng chức năng này.")
+                return "OK"
+
+            deleted = 0
+            for msg in messages:
+                try:
+                    bot.delete_message(msg["chat_id"], msg["msg_id"])
+                    deleted += 1
+                except:
+                    pass
+
+            save_messages([])
+
+            send_and_log(chat_id, f"🧹 Đã xoá {deleted} tin nhắn bot. (Không mất lịch sử quỹ)")
+            send_menu(chat_id)
+            return "OK"
+
+        # ---- NORMAL BUTTONS ----
         if action == "add":
-            bot.send_message(chat_id, "👉 Nhập tiền nạp (vd: 100k hoặc 300k A nộp):")
+            send_and_log(chat_id, "👉 Nhập tiền nạp (vd: 100k hoặc 300k A nộp):")
+
         elif action == "spend":
-            bot.send_message(chat_id, "👉 Nhập chi tiêu (vd: 50k rau, 200k thịt):")
+            send_and_log(chat_id, "👉 Nhập chi tiêu (vd: 50k rau, 200k thịt):")
+
         elif action == "report":
             now = datetime.datetime.now(TZ)
             month = now.strftime("%m")
             year = now.strftime("%Y")
 
-            records = [
-                r for r in data["lich_su"]
-                if r["time"][5:7] == month and r["time"][0:4] == year
-            ]
+            filtered = [r for r in data["lich_su"] if r["time"][5:7] == month and r["time"][0:4] == year]
 
-            total_add = sum(i["amount"] for i in records if i["type"] == "add")
-            total_spend = sum(i["amount"] for i in records if i["type"] == "spend")
+            total_add = sum(x["amount"] for x in filtered if x["type"] == "add")
+            total_spend = sum(x["amount"] for x in filtered if x["type"] == "spend")
 
             msg = f"📊 *BÁO CÁO THÁNG {month}/{year}*\n\n💰 Tổng nạp: {format_money(total_add)}\n"
-            for i in records:
-                if i["type"] == "add":
-                    t = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
-                    msg += f"   ➕ {format_money(i['amount'])} — {i['desc']} • {t}\n"
 
-            msg += f"\n🛍 Tổng chi: {format_money(total_spend)}\n"
-            for i in records:
-                if i["type"] == "spend":
-                    t = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
-                    msg += f"   ➖ {format_money(i['amount'])} — {i['desc']} • {t}\n"
+            for i in filtered:
+                t = datetime.datetime.strptime(i["time"], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M")
+                symbol = "➕" if i["type"] == "add" else "➖"
+                msg += f"   {symbol} {format_money(i['amount'])} — {i['desc']} • {t}\n"
 
             msg += f"\n💵 *Quỹ hiện tại:* {format_money(data['quy'])}"
 
-            bot.send_message(chat_id, msg, parse_mode="Markdown")
+            send_and_log(chat_id, msg, parse_mode="Markdown")
 
         return "OK"
 
 
-    # ====== MESSAGE INPUT MODE ======
+    # ================= MESSAGE INPUT MODE =================
     if update.message:
         chat_id = update.message.chat_id
-        text = update.message.text
         user = update.message.from_user.first_name
+        text = update.message.text
 
-        state = load_state()
-        mode = state.get(str(chat_id))
         data = load_data()
+        state = load_state()
 
         if text.startswith("/start"):
             send_menu(chat_id)
             return "OK"
 
+        mode = state.get(str(chat_id))
+
         if not mode:
-            bot.send_message(chat_id, "⚠️ Hãy chọn chức năng trước!")
+            send_and_log(chat_id, "⚠️ Hãy chọn chức năng trước!")
             send_menu(chat_id)
             return "OK"
 
-        # ========= ADD MONEY =========
+        # ===== ADD MONEY =====
         if mode == "add":
             token = text.split(" ", 1)[0].lower()
             amount = parse_amount(token)
 
             if amount is None:
-                bot.send_message(chat_id, "❌ Sai định dạng!\n💡 Ví dụ đúng:\n• 50k\n• 300k A nộp\n\n👉 Nhập lại:")
+                send_and_log(chat_id, "❌ Sai cú pháp!\n💡 Ví dụ đúng:\n- 100k\n- 200k A nộp\n👉 Nhập lại:")
                 return "OK"
 
             desc = text[len(token):].strip() or "Nạp quỹ"
             desc = f"{desc} — ({user})"
 
             data["quy"] += amount
-            data["lich_su"].append({
-                "time": now_time(),
-                "type": "add",
-                "amount": amount,
-                "desc": desc,
-                "user": user
-            })
+            data["lich_su"].append({"time": now_time(), "type": "add", "amount": amount, "desc": desc, "user": user})
             save_data(data)
 
-            bot.send_message(chat_id, f"💰 NẠP {format_money(amount)}\n🧾 {desc}\n👉 Quỹ: {format_money(data['quy'])}")
+            send_and_log(chat_id, f"💰 NẠP {format_money(amount)}\n🧾 {desc}\n👉 Quỹ: {format_money(data['quy'])}")
 
             state[str(chat_id)] = None
             save_state(state)
             send_menu(chat_id)
             return "OK"
 
-
-        # ========= SPENDING =========
+        # ===== SPENDING =====
         if mode == "spend":
-            items = text.split(",")
+            entries = text.split(",")
             total = 0
-            records = []
+            items = []
 
-            for item in items:
-                part = item.strip().split(" ", 1)
+            for entry in entries:
+                part = entry.strip().split(" ", 1)
                 token = part[0].lower()
                 amount = parse_amount(token)
 
                 if amount is None:
-                    bot.send_message(chat_id, "❌ Sai định dạng!\n💡 Ví dụ đúng:\n• 50k rau\n• 50k rau, 200k thịt\n\n👉 Nhập lại toàn bộ:")
+                    send_and_log(chat_id, "❌ Sai cú pháp!\n💡 Ví dụ đúng:\n- 50k rau\n- 50k rau, 200k thịt\n👉 Nhập lại:")
                     return "OK"
 
                 desc = part[1] if len(part) > 1 else "Chi tiêu"
                 desc = f"{desc} — ({user})"
 
                 total += amount
-                records.append({"amount": amount, "desc": desc})
+                items.append({"amount": amount, "desc": desc})
 
-            # apply
-            for r in records:
-                data["lich_su"].append({
-                    "time": now_time(),
-                    "type": "spend",
-                    "amount": r["amount"],
-                    "desc": r["desc"],
-                    "user": user
-                })
+            for x in items:
+                data["lich_su"].append({"time": now_time(), "type": "spend", "amount": x["amount"], "desc": x["desc"], "user": user})
 
             data["quy"] -= total
             save_data(data)
 
-            # === RESET WHEN FUNDS = 0 ===
+            # ---- Reset if zero ----
             if data["quy"] == 0:
                 now = datetime.datetime.now(TZ)
-                month = now.strftime("%m/%Y")
+                summary = f"📦 Chu kỳ đã kết thúc!\n📁 Backup đã lưu.\n🔄 Bắt đầu chu kỳ mới."
+                send_and_log(chat_id, summary)
 
-                total_add = sum(i["amount"] for i in data["lich_su"] if i["type"] == "add")
-                total_spend = sum(i["amount"] for i in data["lich_su"] if i["type"] == "spend")
-
-                msg = (
-                    f"📦 *KẾT THÚC CHU KỲ*\n\n"
-                    f"🗓 Tháng: {month}\n\n"
-                    f"💰 Tổng nạp: {format_money(total_add)}\n"
-                    f"🛍 Tổng chi: {format_money(total_spend)}\n"
-                    f"💵 Số dư cuối: 0\n\n"
-                    f"📁 Đã lưu backup.\n"
-                    f"🔄 Bắt đầu chu kỳ mới."
-                )
-
-                bot.send_message(chat_id, msg, parse_mode="Markdown")
-
-                timestamp = now.strftime("%Y-%m-%d_%H-%M")
-                backup = f"backup_{timestamp}.json"
-                json.dump(data, open(backup, "w", encoding="utf-8"), indent=4, ensure_ascii=False)
+                backup = f"backup_{now.strftime('%Y%m%d_%H%M')}.json"
+                json.dump(data, open(backup, "w", encoding="utf-8"), indent=4)
 
                 data["lich_su"] = []
                 save_data(data)
+
                 send_menu(chat_id)
                 return "OK"
 
-            bot.send_message(chat_id, f"🧾 CHI {format_money(total)} — cập nhật!\n👉 Quỹ còn: {format_money(data['quy'])}")
+            send_and_log(chat_id, f"🧾 CHI {format_money(total)} thành công!\n👉 Quỹ còn: {format_money(data['quy'])}")
 
             state[str(chat_id)] = None
             save_state(state)
