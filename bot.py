@@ -3,80 +3,75 @@ import json
 import datetime
 from flask import Flask, request
 import telegram
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
-# =========================================
-# CONFIG
-# =========================================
+# ------------- CONFIG -------------
 TOKEN = os.getenv("BOT_TOKEN")
-bot = telegram.Bot(TOKEN)
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable not set")
+bot = telegram.Bot(token=TOKEN)
+
+# Thêm admin ở đây (số nguyên)
+ADMIN_IDS = {977170999}
 
 DATA_FILE = "data.json"
 
-ADMIN_IDS = {977170999}   # ID admin của bạn
+# ------------- HELPERS -------------
+def now():
+    """GMT+7 timestamp"""
+    return (datetime.datetime.utcnow() + datetime.timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
-STATE = {}  # Lưu trạng thái người dùng theo chat_id
-
-app = Flask(__name__)
-
-
-# =========================================
-# HÀM FORMAT TIỀN
-# =========================================
 def format_money(amount):
+    """Luôn trả về dạng k nếu phù hợp, ngược lại trả nguyên (đống tiền lẻ)"""
     amount = int(amount)
-    return f"{amount // 1000}k"
+    if amount % 1000 == 0:
+        return f"{amount // 1000}k"
+    return f"{amount}đ"
 
-
-# =========================================
-# PARSE SỐ TIỀN USER NHẬP
-# =========================================
 def parse_amount(text):
-    text = text.strip().lower()
-
-    if text.endswith("k"):
-        num = text[:-1]
+    """
+    Nhận '50k' -> 50000
+    Nếu không đúng -> None
+    """
+    if not text:
+        return None
+    s = text.lower().strip()
+    if s.endswith("k"):
+        num = s[:-1]
         if num.isdigit():
             return int(num) * 1000
         return None
-
-    if text.isdigit():
-        return int(text)
-
+    # không chấp nhận chữ số thuần (theo yêu cầu bạn bắt buộc có 'k')
     return None
 
+def ensure_db_structure(db):
+    """Đảm bảo các key tồn tại"""
+    if "quy" not in db:
+        db["quy"] = 0
+    if "quy_tools" not in db:
+        db["quy_tools"] = 0
+    if "lich_su" not in db:
+        db["lich_su"] = []
+    if "lich_su_tools" not in db:
+        db["lich_su_tools"] = []
+    if "modes" not in db:
+        db["modes"] = {}          # lưu mode theo chat_id: db["modes"][str(chat_id)] = "add_quy" ...
+    if "last_action" not in db:
+        db["last_action"] = {}    # last_action theo chat_id
+    return db
 
-# =========================================
-# TIME GMT+7
-# =========================================
-def now():
-    return (datetime.datetime.utcnow() + datetime.timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
-
-
-# =========================================
-# LOAD / SAVE
-# =========================================
 def load_data():
     if not os.path.exists(DATA_FILE):
-        return {
-            "quy": 0,
-            "quy_tools": 0,
-            "lich_su": [],
-            "lich_su_tools": [],
-            "last_action": None
-        }
+        return ensure_db_structure({})
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
+        db = json.load(f)
+    return ensure_db_structure(db)
 
 def save_data(db):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=4, ensure_ascii=False)
 
-
-# =========================================
-# MENU
-# =========================================
+# ------------- UI -------------
 def send_menu(chat_id):
     buttons = [
         [InlineKeyboardButton("➕ Thêm quỹ", callback_data="add_quy")],
@@ -84,255 +79,241 @@ def send_menu(chat_id):
         [InlineKeyboardButton("🛠 Thêm quỹ dụng cụ", callback_data="add_tool")],
         [InlineKeyboardButton("🛠 Chi dụng cụ", callback_data="spend_tool")],
         [InlineKeyboardButton("📊 Báo cáo", callback_data="report")],
-        [InlineKeyboardButton("↩ Hoàn tác giao dịch", callback_data="undo")]
+        [InlineKeyboardButton("↩ Hoàn tác giao dịch cuối", callback_data="undo")],
+        [InlineKeyboardButton("🧹 Xóa tin bot (admin)", callback_data="clear_bot")]
     ]
-    bot.send_message(chat_id, "📌 *Chọn chức năng:*", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    bot.send_message(chat_id, "📌 Chọn chức năng:", reply_markup=InlineKeyboardMarkup(buttons))
 
+# ------------- FLASK APP -------------
+app = Flask(__name__)
 
-# =========================================
-# WEBHOOK ROOT
-# =========================================
 @app.route("/", methods=["GET"])
 def home():
-    return "Bot is running!"
+    return "BepCongVu bot running"
 
-
-# =========================================
-# WEBHOOK MAIN
-# =========================================
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     update = telegram.Update.de_json(request.get_json(force=True), bot)
 
-    # ======================================================
-    # XỬ LÝ CALLBACK BUTTON
-    # ======================================================
+    db = load_data()
+
+    # -------- callback query (button) ----------
     if update.callback_query:
         cq = update.callback_query
         chat_id = cq.message.chat_id
-        user_id = cq.from_user.id
-        key = cq.data
+        uid = cq.from_user.id
+        data = cq.data
 
-        # LƯU TRẠNG THÁI
-        STATE[chat_id] = key
-
-        # Kiểm tra quyền admin cho chức năng đặc biệt
-        if key in ["add_tool", "spend_tool"]:
-            if user_id not in ADMIN_IDS:
-                bot.send_message(chat_id, "⛔ Chỉ admin mới được dùng chức năng này.")
-                return "OK"
-
-        messages = {
-            "add_quy": "👉 Nhập số tiền nạp (vd: 100k hoặc 300k A nộp):",
-            "spend": "👉 Nhập số tiền + mô tả (vd: 50k rau):",
-            "add_tool": "👉 Nhập số tiền nạp quỹ dụng cụ:",
-            "spend_tool": "👉 Nhập số tiền + mô tả dụng cụ (vd: 40k dao):"
-        }
-
-        if key in messages:
-            bot.send_message(chat_id, messages[key])
+        # set mode per chat
+        if data in ("add_quy", "spend", "add_tool", "spend_tool"):
+            db["modes"][str(chat_id)] = data
+            save_data(db)
+            if data == "add_quy":
+                bot.send_message(chat_id, "👉 Nhập số tiền nạp (ví dụ: 100k hoặc 300k A nộp):")
+            elif data == "spend":
+                bot.send_message(chat_id, "👉 Nhập số tiền + mô tả (ví dụ: 50k rau):")
+            elif data == "add_tool":
+                if uid not in ADMIN_IDS:
+                    bot.send_message(chat_id, "⛔ Chỉ admin mới được thêm quỹ dụng cụ.")
+                    return "OK"
+                bot.send_message(chat_id, "👉 Nhập số tiền nạp quỹ dụng cụ (ví dụ: 200k):")
+            elif data == "spend_tool":
+                if uid not in ADMIN_IDS:
+                    bot.send_message(chat_id, "⛔ Chỉ admin mới được chi dụng cụ.")
+                    return "OK"
+                bot.send_message(chat_id, "👉 Nhập số tiền + mô tả cho quỹ dụng cụ (ví dụ: 50k dao):")
             return "OK"
 
-        # =========== HOÀN TÁC ===========
-        if key == "undo":
-            db = load_data()
+        # clear bot message (admin) - note: Telegram may not allow delete in group if bot not admin
+        if data == "clear_bot":
+            if uid not in ADMIN_IDS:
+                bot.send_message(chat_id, "⛔ Chỉ admin mới dùng chức năng này.")
+                return "OK"
+            try:
+                bot.delete_message(chat_id, cq.message.message_id)
+            except Exception:
+                pass
+            return "OK"
 
-            if not db["last_action"]:
+        # undo last action for this chat
+        if data == "undo":
+            last = db["last_action"].get(str(chat_id))
+            if not last:
                 bot.send_message(chat_id, "⚠ Không có giao dịch để hoàn tác.")
                 return "OK"
-
-            act = db["last_action"]
-            t = act["type"]
-            amount = act["amount"]
-
-            if t == "add":
-                db["quy"] -= amount
-                db["lich_su"].pop()
-
-            if t == "spend":
-                db["quy"] += amount
-                db["lich_su"].pop()
-
-            if t == "add_tool":
-                db["quy_tools"] -= amount
-                db["lich_su_tools"].pop()
-
-            if t == "spend_tool":
-                db["quy_tools"] += amount
-                db["lich_su_tools"].pop()
-
-            db["last_action"] = None
+            # handle types: main_add, main_spend, tool_add, tool_spend
+            t = last.get("type")
+            amt = last.get("amount", 0)
+            if t == "main_add":
+                db["quy"] -= amt
+                if db["lich_su"]:
+                    db["lich_su"].pop()
+            elif t == "main_spend":
+                db["quy"] += amt
+                if db["lich_su"]:
+                    db["lich_su"].pop()
+            elif t == "tool_add":
+                db["quy_tools"] -= amt
+                if db["lich_su_tools"]:
+                    db["lich_su_tools"].pop()
+            elif t == "tool_spend":
+                db["quy_tools"] += amt
+                if db["lich_su_tools"]:
+                    db["lich_su_tools"].pop()
+            db["last_action"].pop(str(chat_id), None)
             save_data(db)
-
             bot.send_message(chat_id, "↩ Đã hoàn tác giao dịch cuối.")
             return "OK"
 
-        # =========== BÁO CÁO ===========
-        if key == "report":
-            db = load_data()
-
+        # report
+        if data == "report":
+            # Build report
             text = f"📊 *BÁO CÁO THÁNG {now()[3:10]}*\n\n"
 
-            # --- QUỸ CHÍNH ---
+            # QUỸ CHÍNH
             text += "💰 *QUỸ CHÍNH*\n"
-            total_add = sum(i["amount"] for i in db["lich_su"] if i["kind"] == "add")
-            total_spend = sum(i["amount"] for i in db["lich_su"] if i["kind"] == "spend")
-
+            total_add = sum(i["amount"] for i in db["lich_su"] if i.get("kind") == "add")
+            total_spend = sum(i["amount"] for i in db["lich_su"] if i.get("kind") == "spend")
             text += f"• Tổng nạp: {format_money(total_add)}\n"
-            text += f"• Tổng chi: {format_money(total_spend)}\n"
-            text += f"• Còn lại: {format_money(db['quy'])}\n\n"
+            if total_add == 0:
+                text += "  Không có\n"
+            else:
+                for item in db["lich_su"]:
+                    if item.get("kind") == "add":
+                        text += f"  ➕ {format_money(item['amount'])} — {item['desc']} • {item['time']}\n"
+            text += f"\n• Tổng chi: {format_money(total_spend)}\n"
+            if total_spend == 0:
+                text += "  Không có\n"
+            else:
+                for item in db["lich_su"]:
+                    if item.get("kind") == "spend":
+                        text += f"  ➖ {format_money(item['amount'])} — {item['desc']} • {item['time']}\n"
+            text += f"\n💵 *Quỹ chính hiện tại:* {format_money(db['quy'])}\n\n"
 
-            # --- Lịch sử ---
-            for i in db["lich_su"]:
-                op = "➕" if i["kind"] == "add" else "➖"
-                text += f"{op} {format_money(i['amount'])} — {i['desc']} • {i['time']}\n"
-
-            text += "\n\n🛠 *QUỸ DỤNG CỤ*\n"
-            total_add2 = sum(i["amount"] for i in db["lich_su_tools"] if i["kind"] == "add")
-            total_spend2 = sum(i["amount"] for i in db["lich_su_tools"] if i["kind"] == "spend")
-
+            # QUỸ DỤNG CỤ
+            text += "🛠 *QUỸ DỤNG CỤ*\n"
+            total_add2 = sum(i["amount"] for i in db["lich_su_tools"] if i.get("kind") == "add")
+            total_spend2 = sum(i["amount"] for i in db["lich_su_tools"] if i.get("kind") == "spend")
             text += f"• Tổng nạp: {format_money(total_add2)}\n"
-            text += f"• Tổng chi: {format_money(total_spend2)}\n"
-            text += f"• Còn lại: {format_money(db['quy_tools'])}\n\n"
-
-            for i in db["lich_su_tools"]:
-                op = "➕" if i["kind"] == "add" else "➖"
-                text += f"{op} {format_money(i['amount'])} — {i['desc']} • {i['time']}\n"
+            if total_add2 == 0:
+                text += "  Không có\n"
+            else:
+                for item in db["lich_su_tools"]:
+                    if item.get("kind") == "add":
+                        text += f"  ➕ {format_money(item['amount'])} — {item['desc']} • {item['time']}\n"
+            text += f"\n• Tổng chi: {format_money(total_spend2)}\n"
+            if total_spend2 == 0:
+                text += "  Không có\n"
+            else:
+                for item in db["lich_su_tools"]:
+                    if item.get("kind") == "spend":
+                        text += f"  ➖ {format_money(item['amount'])} — {item['desc']} • {item['time']}\n"
+            text += f"\n🧰 *Quỹ dụng cụ hiện tại:* {format_money(db['quy_tools'])}"
 
             bot.send_message(chat_id, text, parse_mode="Markdown")
             return "OK"
 
-    # ======================================================
-    # XỬ LÝ TIN NHẮN (NHẬP SỐ TIỀN...)
-    # ======================================================
+    # -------- message handling ----------
     if update.message:
         msg = update.message
         chat_id = msg.chat_id
-        text = msg.text.strip()
+        text = (msg.text or "").strip()
         user = msg.from_user.first_name
+        uid = msg.from_user.id
 
+        # start
         if text.startswith("/start"):
             send_menu(chat_id)
             return "OK"
 
-        if chat_id not in STATE:
+        # get mode for this chat
+        mode = db["modes"].get(str(chat_id))
+        if not mode:
             bot.send_message(chat_id, "⚠ Vui lòng chọn chức năng trước.")
             send_menu(chat_id)
             return "OK"
 
-        mode = STATE[chat_id]
-        db = load_data()
-
-        # ==== NẠP QUỸ CHÍNH ====
+        # add_quy (main fund)
         if mode == "add_quy":
+            # expect "50k [ghi chu optional]"
             parts = text.split(" ", 1)
-            amount = parse_amount(parts[0])
-
-            if amount is None:
-                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ đúng: 100k hoặc 300k A nộp")
+            amt = parse_amount(parts[0])
+            if amt is None:
+                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ: 100k hoặc 300k A nộp")
                 return "OK"
-
-            desc = parts[1] if len(parts) > 1 else f"Nạp quỹ — ({user})"
-
-            db["quy"] += amount
-            db["lich_su"].append({
-                "time": now(),
-                "kind": "add",
-                "amount": amount,
-                "desc": desc,
-                "user": user
-            })
-            db["last_action"] = {"type": "add", "amount": amount}
+            desc = parts[1] if len(parts) > 1 else "Nạp quỹ"
+            desc = f"{desc} — ({user})"
+            db["quy"] += amt
+            db["lich_su"].append({"time": now(), "kind": "add", "amount": amt, "desc": desc, "user": user})
+            db["last_action"][str(chat_id)] = {"type": "main_add", "amount": amt}
+            db["modes"].pop(str(chat_id), None)
             save_data(db)
-
-            bot.send_message(chat_id, f"💰 NẠP {format_money(amount)}\n👉 Quỹ: {format_money(db['quy'])}")
-            STATE.pop(chat_id)
+            bot.send_message(chat_id, f"💰 NẠP {format_money(amt)}\n👉 Quỹ: {format_money(db['quy'])}")
+            send_menu(chat_id)
             return "OK"
 
-        # ==== CHI QUỸ CHÍNH ====
+        # spend (main)
         if mode == "spend":
             parts = text.split(" ", 1)
-
             if len(parts) < 2:
-                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ: 30k rau")
+                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ: 50k rau")
                 return "OK"
-
-            amount = parse_amount(parts[0])
-            if amount is None:
+            amt = parse_amount(parts[0])
+            if amt is None:
                 bot.send_message(chat_id, "⚠ Sai số tiền! Ví dụ: 50k")
                 return "OK"
-
-            desc = parts[1] + f" — ({user})"
-
-            db["quy"] -= amount
-            db["lich_su"].append({
-                "time": now(),
-                "kind": "spend",
-                "amount": amount,
-                "desc": desc,
-                "user": user
-            })
-            db["last_action"] = {"type": "spend", "amount": amount}
+            desc = f"{parts[1]} — ({user})"
+            db["quy"] -= amt
+            db["lich_su"].append({"time": now(), "kind": "spend", "amount": amt, "desc": desc, "user": user})
+            db["last_action"][str(chat_id)] = {"type": "main_spend", "amount": amt}
+            db["modes"].pop(str(chat_id), None)
             save_data(db)
-
-            bot.send_message(chat_id, f"🧾 CHI {format_money(amount)} — {desc}\n👉 Còn: {format_money(db['quy'])}")
-            STATE.pop(chat_id)
+            bot.send_message(chat_id, f"🧾 CHI {format_money(amt)} — {parts[1]}\n👉 Còn: {format_money(db['quy'])}")
+            send_menu(chat_id)
             return "OK"
 
-        # ==== NẠP QUỸ DỤNG CỤ ====
+        # add_tool (admin)
         if mode == "add_tool":
-            amount = parse_amount(text)
-            if amount is None:
-                bot.send_message(chat_id, "⚠ Sai số tiền! Ví dụ: 50k")
+            if uid not in ADMIN_IDS:
+                bot.send_message(chat_id, "⛔ Chỉ admin mới được dùng chức năng này.")
                 return "OK"
-
-            db["quy_tools"] += amount
-            db["lich_su_tools"].append({
-                "time": now(),
-                "kind": "add",
-                "amount": amount,
-                "desc": "Nạp quỹ dụng cụ",
-                "user": user
-            })
-            db["last_action"] = {"type": "add_tool", "amount": amount}
+            amt = parse_amount(text)
+            if amt is None:
+                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ: 200k")
+                return "OK"
+            db["quy_tools"] += amt
+            db["lich_su_tools"].append({"time": now(), "kind": "add", "amount": amt, "desc": "Nạp quỹ dụng cụ", "user": user})
+            db["last_action"][str(chat_id)] = {"type": "tool_add", "amount": amt}
+            db["modes"].pop(str(chat_id), None)
             save_data(db)
-
-            bot.send_message(chat_id, f"🛠 NẠP {format_money(amount)}\n👉 Quỹ dụng cụ: {format_money(db['quy_tools'])}")
-            STATE.pop(chat_id)
+            bot.send_message(chat_id, f"🛠 NẠP {format_money(amt)} vào quỹ dụng cụ\n👉 Quỹ dụng cụ: {format_money(db['quy_tools'])}")
+            send_menu(chat_id)
             return "OK"
 
-        # ==== CHI QUỸ DỤNG CỤ ====
+        # spend_tool (admin)
         if mode == "spend_tool":
+            if uid not in ADMIN_IDS:
+                bot.send_message(chat_id, "⛔ Chỉ admin mới được dùng chức năng này.")
+                return "OK"
             parts = text.split(" ", 1)
-
             if len(parts) < 2:
-                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ: 40k dao")
+                bot.send_message(chat_id, "⚠ Sai cú pháp! Ví dụ: 50k dao")
                 return "OK"
-
-            amount = parse_amount(parts[0])
-            if amount is None:
-                bot.send_message(chat_id, "⚠ Sai số tiền! Ví dụ: 30k")
+            amt = parse_amount(parts[0])
+            if amt is None:
+                bot.send_message(chat_id, "⚠ Sai số tiền! Ví dụ: 50k")
                 return "OK"
-
-            desc = parts[1] + f" — ({user})"
-
-            db["quy_tools"] -= amount
-            db["lich_su_tools"].append({
-                "time": now(),
-                "kind": "spend",
-                "amount": amount,
-                "desc": desc,
-                "user": user
-            })
-            db["last_action"] = {"type": "spend_tool", "amount": amount}
+            desc = f"{parts[1]} — ({user})"
+            db["quy_tools"] -= amt
+            db["lich_su_tools"].append({"time": now(), "kind": "spend", "amount": amt, "desc": desc, "user": user})
+            db["last_action"][str(chat_id)] = {"type": "tool_spend", "amount": amt}
+            db["modes"].pop(str(chat_id), None)
             save_data(db)
-
-            bot.send_message(chat_id, f"🛠 CHI {format_money(amount)} — {desc}\n👉 Còn: {format_money(db['quy_tools'])}")
-            STATE.pop(chat_id)
+            bot.send_message(chat_id, f"🛠 CHI {format_money(amt)} — {parts[1]}\n👉 Quỹ dụng cụ: {format_money(db['quy_tools'])}")
+            send_menu(chat_id)
             return "OK"
 
     return "OK"
 
-
 if __name__ == "__main__":
-    app.run(port=5000, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
